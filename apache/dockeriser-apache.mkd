@@ -1,0 +1,1398 @@
+
+<meta http-equiv='Content-Type' content='text/html; charset=utf-8' /> 
+<style>
+pre{background:#F8F8FF; border:black dashed 1px; padding:6px}
+</style>
+
+TODO corriger les \_
+
+# Index 
+
+* [ Dockeriser Apache](#dockeriser) 
+       * [ Dockeriser Apache version simple ](#dockeriser_simple) 
+       * [ Considération réseau pour le conteneur Apache](#dockeriser_network) 
+       * [ Mise en place du site web](#dockeriser_site-web) 
+           * [ Mise en place du site web via Git ou Subversion](#dockeriser_site-web_git) 
+           * [ Mise en place du site web avec un volume ](#dockeriser_site-volume) 
+           * [ Conservation des données du sites (volume et nommage du conteneur)](#dockeriser_volume4data) 
+               * [ Définition d'un volume pour les données](#dockeriser_volume4dataInfo) 
+               * [ Nommage du conteneur pour conserver les données du site](#dockeriser_Name4dataInfo) 
+       * [ Configuration ](#dockeriser_config) 
+           * [ Configuration Apache](#dockeriser_config_Apache) 
+           * [ Configuration Applicative](#dockeriser_config_App) 
+       * [ Visualisation des logs Apache](#dockeriser_apache_logs) 
+       * [ Correctif d'urgence](#dockeriser_fix_tempo) 
+       * [ Docker-Compose pour simplifier](#dockeriser_dockercompose) 
+           * [ Introduction](#dockeriser_dockercompose_introduction)
+           * [ docker-compose.yml](#dockeriser_dockercompose_format)
+           * [ Build](#dockeriser_dockercompose_build)
+
+# <a name="dockeriser" /> Dockeriser Apache
+
+Nous avons vu la configuration de apache, en long en large et en détail, nous allons maintenant voir comment __dockeriser__ apache . Comme toujours la partie __docker__ est optionnel , mais je trouve très intéressant pour standardiser vos déploiement. Je vais prendre le temps de présenter un mode simple de mise en place et d'adresser quelques problème que vous pourriez rencontrer.
+
+
+## <a name="dockeriser_simple" /> Dockeriser Apache version simple 
+
+Nous allons continuer d'utiliser le système Ubuntu pour faire le déploiement libre à vous de modifier la distribution bien entendu vous aurez des problèmes de chemin des fichiers si vous optez pour __CentOS__ et __RedHat__.
+
+Nous avons déjà vu la création d'une image personnaliser docker, comme ça fait un petit peu de temps nous allons y aller tranquillement offrant la possibilité à tous le monde de ce rafraichir la mémoire. 
+
+Nous allons mettre en place les bases en installant apache et ainsi que la structure des fichiers . Mettons en place une structure de travail :
+
+        $ mkdir ~/git/mein_apache
+        $ cd ~/git/mein_apache
+        $ git init .
+        $ touch Licence
+        $ git add Licence
+        $ git commit -a -m "Initialisation du dépot Git "
+        $ vim Dockerfile
+
+Je vous invite FORTEMENT à utiliser __git__ afin de conserver une traçabilité des modifications de votre Docker.
+
+        $ cat Dockerfile
+        # Définition de l'image de Base ( distribution )
+        FROM i686/ubuntu
+        MAINTAINER Boutry Thomas 'thomas.boutry@x3rus.com'
+
+        # Activation du mode non interactif pour apt
+        ENV DEBIAN_FRONTEND noninteractive
+
+        # Installation des applications de Base
+        RUN apt-get update && apt-get install -y \
+          apache2 apache2-utils && apt-get clean
+
+        # Fix timezone
+        RUN ln -s -f /usr/share/zoneinfo/Canada/Eastern /etc/localtime
+
+        # Port exposer 
+        EXPOSE 80
+
+        CMD ["/usr/sbin/apache2","-DFOREGROUND"]
+
+Réalisons le __build__ de l'image en lui donnant un nom significatif dans mon cas : __apache-train__
+
+        $ docker build -t apache-train . 
+        [... OUTPUT COUPÉ ...]
+        Step 5 : EXPOSE 80
+         ---> Running in cb3cec30ef9c
+         ---> 7648874030d3
+        Removing intermediate container cb3cec30ef9c
+        Step 6 : CMD /usr/sbin/apache2 -DFOREGROUND
+         ---> Running in c37de7aa4829
+         ---> 6c9f625812c5
+        Removing intermediate container c37de7aa4829
+        Successfully built 6c9f625812c5
+
+On fait un test ?? Je vous dis tous de suite ça ne fonctionnera pas :P , c'est partie 
+
+        $ docker run apache-train
+        [Tue Jul 12 17:25:05.374632 2016] [core:warn] [pid 1] AH00111: Config variable ${APACHE_LOCK_DIR} is not defined
+        [Tue Jul 12 17:25:05.377490 2016] [core:warn] [pid 1] AH00111: Config variable ${APACHE_PID_FILE} is not defined
+        [Tue Jul 12 17:25:05.377522 2016] [core:warn] [pid 1] AH00111: Config variable ${APACHE_RUN_USER} is not defined
+        [Tue Jul 12 17:25:05.377529 2016] [core:warn] [pid 1] AH00111: Config variable ${APACHE_RUN_GROUP} is not defined
+        [Tue Jul 12 17:25:05.377556 2016] [core:warn] [pid 1] AH00111: Config variable ${APACHE_LOG_DIR} is not defined
+        [Tue Jul 12 17:25:05.396087 2016] [core:warn] [pid 1:tid 3075414656] AH00111: Config variable ${APACHE_LOG_DIR} is not defined
+        [Tue Jul 12 17:25:05.397428 2016] [core:warn] [pid 1:tid 3075414656] AH00111: Config variable ${APACHE_LOG_DIR} is not defined
+        [Tue Jul 12 17:25:05.397458 2016] [core:warn] [pid 1:tid 3075414656] AH00111: Config variable ${APACHE_LOG_DIR} is not defined
+        AH00526: Syntax error on line 74 of /etc/apache2/apache2.conf:
+        Invalid Mutex directory in argument file:${APACHE_LOCK_DIR}
+
+
+Nous allons profiter de cette opportunité pour voir comment nous allons analyser ce problème , mon premier reflex et de démarrer la conteneur non plus en mode automatique avec exécution  de l'instruction **EXEC** contenu à la fin du __Dockerfile__
+
+        [ ... OUTPUT COUPÉ ... ]
+        # Port exposer 
+        EXPOSE 80
+
+        CMD ["/usr/sbin/apache2","-DFOREGROUND"]
+
+Donc exécutons  le conteneur avec __bash__ en mode interactif :
+
+        $ docker run -it apache-train bash
+        root@46e37e65f98b:/# ip addr show
+        [... OUTPUT COUPÉ ...]
+        15: eth0@if16: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP group default
+            link/ether 02:42:ac:11:00:06 brd ff:ff:ff:ff:ff:ff
+                inet 172.17.0.6/16 scope global eth0
+
+Nous allons démarrer le service apache de la manière "classique" :
+
+        root@46e37e65f98b:/# /etc/init.d/apache2 start
+         * Starting web server apache2                                                                                                /usr/sbin/apache2ctl: 87: ulimit: error setting limit (Operation not permitted)
+         Setting ulimit failed. See README.Debian for more information.
+         AH00558: apache2: Could not reliably determine the server's fully qualified domain name, using 172.17.0.6. Set the 'ServerName' directive globally to suppress this message
+         *
+        root@46e37e65f98b:/# ps aux | grep apac
+        root        37  0.0  0.2   5500  4124 ?        Ss   17:32   0:00 /usr/sbin/apache2 -k start
+        www-data    40  0.0  0.1 228132  3744 ?        Sl   17:32   0:00 /usr/sbin/apache2 -k start
+        www-data    41  0.0  0.1 228132  3832 ?        Sl   17:32   0:00 /usr/sbin/apache2 -k start
+
+Si nous allons à l'URL : http://172.17.0.6/ ça fonctionne :
+
+![default_page_ubuntu.png](./imgs/default_page_ubuntu.png)
+
+Mais dans l'instruction du __Dockerfile__ ce n'est PAS __/etc/init.d/apache2 start__ qui est utilisé , essayons avec la commande dans le __Dockerfile__ :
+
+        root@46e37e65f98b:/# /usr/sbin/apache2 -DFOREGROUND
+        [Tue Jul 12 17:37:40.874436 2016] [core:warn] [pid 146] AH00111: Config variable ${APACHE_LOCK_DIR} is not defined
+        [Tue Jul 12 17:37:40.874582 2016] [core:warn] [pid 146] AH00111: Config variable ${APACHE_PID_FILE} is not defined
+        [Tue Jul 12 17:37:40.874623 2016] [core:warn] [pid 146] AH00111: Config variable ${APACHE_RUN_USER} is not defined
+        [Tue Jul 12 17:37:40.874642 2016] [core:warn] [pid 146] AH00111: Config variable ${APACHE_RUN_GROUP} is not defined
+        [Tue Jul 12 17:37:40.876067 2016] [core:warn] [pid 146] AH00111: Config variable ${APACHE_LOG_DIR} is not defined
+        [Tue Jul 12 17:37:40.882795 2016] [core:warn] [pid 146:tid 3075172992] AH00111: Config variable ${APACHE_LOG_DIR} is not defined
+        [Tue Jul 12 17:37:40.883647 2016] [core:warn] [pid 146:tid 3075172992] AH00111: Config variable ${APACHE_LOG_DIR} is not defined
+        [Tue Jul 12 17:37:40.883699 2016] [core:warn] [pid 146:tid 3075172992] AH00111: Config variable ${APACHE_LOG_DIR} is not defined
+        AH00526: Syntax error on line 74 of /etc/apache2/apache2.conf:
+        Invalid Mutex directory in argument file:${APACHE_LOCK_DIR}
+
+SUPER , on a pas la solution mais on peut le reproduire , mais pourquoi on utiliserai pas la commande qui fonctionne dans le __Dockerfile__. Le problème avec l'instruction du __service apache start__ est que le processus sera mis en arrière plan , donc le conteneur docker va démarrer , il va démarrer apache avec succès mais comme ce dernier sera en arrière plan le conteneur va s'arrêter . Démonstration :
+
+        root@46e37e65f98b:/# exit
+
+        $ tail Dockerfile 
+        [... OUTPUT COUPÉ ...]
+        # Port exposer
+        EXPOSE 80
+
+        CMD ["/etc/init.d/apache2","start"]
+
+        $ docker build -t apache-train .
+        [... OUTPUT COUPÉ ...]
+        Step 5 : EXPOSE 80
+         ---> Using cache
+         ---> 7648874030d3
+        Step 6 : CMD /etc/init.d/apache2 start
+         ---> Running in 5921092110f2
+         ---> 8bd040c92c51
+        Removing intermediate container 5921092110f2
+        Successfully built 8bd040c92c51
+
+        $ docker  run apache-train
+         * Starting web server apache2
+        /usr/sbin/apache2ctl: 87: ulimit: error setting limit (Operation not permitted)
+        Setting ulimit failed. See README.Debian for more information.
+        AH00558: apache2: Could not reliably determine the server's fully qualified domain name, using 172.17.0.7. Set the 'ServerName' directive globally to suppress this message
+        * 
+
+        $ docker  ps
+        CONTAINER ID     IMAGE         COMMAND        CREATED         STATUS       PORTS               NAMES
+
+Donc le processus de création de l'image fut un succès mais lors de l'exécution, apache est démarrer mais comme le processus est en arrière plan le docker s'est arrêter avec succès. Nous le voyons lors de l'utilisation de la commande **docker ps** .
+
+Revenons à la première tentative avec la mise en avant plan (__FOREGROUND__) du processus apache si nous regardons les erreurs que nous avions l'ensemble est dû à des variables d'environnement non définie. Lors de l'utilisation de la commande __Service__ ce dernier charge le fichier , si vous exécutez le conteneur __apache_train__ vous pourrez visualiser ce fichier :
+
+        # cat /etc/apache2/envvars  | grep -v "^#" | grep -v "^$"
+        unset HOME
+        if [ "${APACHE_CONFDIR##/etc/apache2-}" != "${APACHE_CONFDIR}" ] ; then
+            SUFFIX="-${APACHE_CONFDIR##/etc/apache2-}"
+        else
+           SUFFIX=
+        fi
+        export APACHE_RUN_USER=www-data
+        export APACHE_RUN_GROUP=www-data
+        export APACHE_PID_FILE=/var/run/apache2/apache2$SUFFIX.pid
+        export APACHE_RUN_DIR=/var/run/apache2$SUFFIX
+        export APACHE_LOCK_DIR=/var/lock/apache2$SUFFIX
+        export APACHE_LOG_DIR=/var/log/apache2$SUFFIX
+        export LANG=C
+        export LANG
+
+Si vous revitalisons les erreurs, nous pourrons constater ce manque :
+
+        [Tue Jul 12 17:25:05.374632 2016] [core:warn] [pid 1] AH00111: Config variable ${APACHE_LOCK_DIR} is not defined
+        [Tue Jul 12 17:25:05.377490 2016] [core:warn] [pid 1] AH00111: Config variable ${APACHE_PID_FILE} is not defined
+        [Tue Jul 12 17:25:05.377522 2016] [core:warn] [pid 1] AH00111: Config variable ${APACHE_RUN_USER} is not defined
+        [Tue Jul 12 17:25:05.377529 2016] [core:warn] [pid 1] AH00111: Config variable ${APACHE_RUN_GROUP} is not defined
+        [Tue Jul 12 17:25:05.377556 2016] [core:warn] [pid 1] AH00111: Config variable ${APACHE_LOG_DIR} is not defined
+
+Afin de corriger ce problème lors de la création de l'image donc le __Dockerfile__ je vais pré définie ces variables . Ceci donne :
+
+        $ cat Dockerfile
+        [... OUTPUT COUPÉ ...]
+        # Fix timezone
+        RUN ln -s -f /usr/share/zoneinfo/Canada/Eastern /etc/localtime
+
+        ENV APACHE_RUN_USER  www-data
+        ENV APACHE_RUN_GROUP www-data
+        ENV APACHE_PID_FILE  /var/run/apache2.pid
+        ENV APACHE_RUN_DIR   /var/run/apache2
+        ENV APACHE_LOCK_DIR  /var/lock/apache2
+        ENV APACHE_LOG_DIR   /var/log/apache2
+
+        # Port exposer 
+        EXPOSE 80
+
+        CMD ["/usr/sbin/apache2","-DFOREGROUND"]
+         
+Reprenons la création de l'image : 
+
+        $ docker build -t apache-train .
+        [... OUTPUT COUPÉ ...]
+        Removing intermediate container 2be1c89d4526
+        Step 10 : ENV APACHE_LOG_DIR /var/log/apache2
+         ---> Running in 5eca720fb524
+         ---> 7746103ca4f7
+        Removing intermediate container 5eca720fb524
+        Step 11 : EXPOSE 80
+         ---> Running in 64727159ffb2
+         ---> 3fc14f0e80ac
+        Removing intermediate container 64727159ffb2
+        Step 12 : CMD /usr/sbin/apache2 -DFOREGROUND
+         ---> Running in 525ec50bd3aa
+         ---> 52d35906d969
+        Removing intermediate container 525ec50bd3aa
+        Successfully built 52d35906d969
+
+Exécutons l'image afin de créer le conteneur :
+
+        $ docker  run apache-train
+        AH00558: apache2: Could not reliably determine the server's fully qualified domain name, using 172.17.0.2. Set the 'ServerName' directive globally to suppress this message
+
+Comme vous pouvez le constater le système ne vous redonne pas la main , vous avez le processus apache en avant plan , si vous prenez un autre terminal vous pourrez constater que le conteneur est bien en exécution
+
+        $ docker  ps
+        CONTAINER ID    IMAGE          COMMAND                CREATED              STATUS              PORTS    NAMES
+        e03dc52435a9    apache-train   "/usr/sbin/apache2 -   About a minute ago   Up About a minute   80/tcp   angry_tesla
+
+Afin de compléter la validation récupérons l'adresse IP du conteneur pour confirmer que nous voyons bien la page par défaut d'apache. Comme vous pouvez le voir la dernière colonne comprend le nom "générique" qui fut donné au conteneur dans le cas présent __angry_tesla__ , nous allons donc utiliser l'instruction __docker inspect__ afin d'extraire l'adresse IP qui fut alloué par __DHCP__ par le __deamon__ __docker__.
+
+        $ docker inspect angry_tesla | grep IPAddress
+                "IPAddress": "172.17.0.2",
+                "SecondaryIPAddresses": null,
+
+Donc si vous allez à l'URL : http://172.17.0.2 , vous aurez la page web par défaut d'apache . **Woot**, ça fonctionne , mais car il a souvent des mais , essayer sur une autre machine de votre réseau d'accéder à la page avec l'IP 172.17.0.2 , vous constaterez que ça ne fonctionne PAS  :-(. 
+
+## <a name="dockeriser_network" /> Considération réseau pour le conteneur Apache
+
+Nous avons un conteneur qui fonctionne la page par défaut d'apache s'affiche, mais ce n'est accessible que depuis la machine où roule le conteneur. Reprenons quelques minute pour parler de la réseautique sous docker , commençons par une représentation graphique des adresses IP et du réseau :
+
+![docker-network-diagramme.png](./imgs/docker-network-diagramme.png)
+
+Donc ici nous avons un docker __host__ qui à 2 conteneurs, __apache-train__ et __apache-test__ (manque d'imagination :P).
+
+Le docker __host__ à l'IP 192.168.42.25 sur le réseau , si nous devons établir une connexion ssh, nous utilisons cette adresse IP . La machine docker gère un réseau "interne" pour les conteneurs le segment réseau choisie est __172.17.0.0/16__ ce segment réseau n'est connu QUE du docker __host__.
+Lors de l'initialisation d'un nouveau conteneur :
+
+1. docker initialise  l'instance du conteneur 
+2. crée une interface virtuel qui sera  le docker __host__ exemple : **vethcdff57c** qui sera associé au conteneur 
+3. Docker crée une interface **eth0** dans le conteneur et l'associer à l'interface créé soit **vethcdff57c**
+4. Par la suite le docker __host__ pige dans son pool d'adresse IP et l'assigne au conteneur soit **172.17.0.4**
+
+Donc le segment réseau 172.17.0.0/16 n'est connu QUE du docker __host__ il n'est pas possible de communiquer directement avec les conteneurs en utilisant leur IP interne. 
+
+Oui mais pourtant j'arrive à me connecter depuis mon conteneur sur les dépôts de logiciel pour faire les installations, donc le réseau fonctionne même à l'extérieur . Effectivement les communications sortante fonctionne SANS problème ,est-ce de la magie ? 
+
+J'aimerai vous dire oui, mais non ... La magie est réalisé par un système de **nat** (**N**etwork **A**ddress **T**ranslation). Heu et en français ça veut dire quoi ? 
+
+Si vous réaliser la commande suivante si votre docker __host__ vous aurez quelque chose de similaire :
+
+        $ sudo iptables -L -n -v -t nat
+        [... OUTPUT COUPÉ ...]
+        Chain POSTROUTING (policy ACCEPT 876 packets, 59176 bytes)
+         pkts bytes target     prot opt in     out     source               destination
+             0     0 MASQUERADE  all  --  *      !docker0  172.17.0.0/16        0.0.0.0/0
+
+        [... OUTPUT COUPÉ ...]
+
+Nous utilisons **iptables** qui est le __firewall__  interne à GNU/Linux , il est capable de faire du __nat__ aussi .
+
+En gros l'instruction suivante veut dire , Si l'adresse IP source est dans le segment réseau 172.17.0.0/16 donc :
+
+        $  ipcalc 172.17.0.0/16
+        [... OUTPUT COUPÉ ...]
+        HostMin:   172.17.0.1           10101100.00010001. 00000000.00000001
+        HostMax:   172.17.255.254       10101100.00010001. 11111111.11111110
+
+Donc si l'adresse de provenance est comprise entre l'IP 172.17.0.1 et 172.17.255.254 et que l'interface de destination n'est PAS **docker0** donc qui n'est pas une communication interne entre les conteneurs alors change l'adresse IP source afin de mettre l'adresse IP : 192.168.42.45 (la c'est implicite :P )
+
+Donc voyons le chemin des paquets réseaux afin de clarifier la situation une petite image aide souvent dans l'explication :
+
+![docker-network-NAT-diagramme.png](./imgs/docker-network-NAT-diagramme.png)
+
+Si vous vous demandez comment le système est en mesure de transmettre l'information quand le serveur distant lui réponds , lorsqu'il y a changement d'adressage __iptables__ conserver une table de correspondance afin de gérer lorsque le paquets revient . Il refera le changement d'adressage mais au lieu de changer la Source du paquet il changera la destination , il remplacera 192.168.42.45 par l'IP du conteneur soit 172.17.0.6 dans notre exemple. 
+
+Maintenant que l'explication sur les communications vers l'externe est réalisé comment on fait pour les communications initié depuis l'extérieur qui désire voir la page web dans le conteneur. Pour ce faire nous allons associé un port sur l'adresse IP "publique" sur le réseau qui sera associé avec le conteneur. En anglais / français on va faire un __port-forward__.
+
+![docker-network-port-fw-diagramme.png](./imgs/docker-network-port-fw-diagramme.png)
+
+Réalisons l'opération afin de confirmer que je ne vous ment pas :P , sans farce afin de voir le fonctionnement.
+
+        $ docker  run  -p 80:80 apache-train 
+        AH00558: apache2: Could not reliably determine the server's fully qualified domain name, using 172.17.0.2. Set the 'ServerName' directive globally to suppress this message
+
+Nous utilisons l'option **-p** pour définir le port sur la machine local -> vers -> le port du conteneur . Si nous réalisons la commande **netstat** nous verrons le port disponible 
+
+        $ sudo netstat -lntp | grep 80
+        tcp6       0      0 :::80                   :::*                    LISTEN      4608/docker-proxy
+        $ ps aux | grep 4608
+        root      4608  0.0  0.7 837704 15600 ?        Sl   17:02   0:00 docker-proxy -proto tcp -host-ip 0.0.0.0 -host-port 80 -container-ip 172.17.0.6 -container-port 80
+
+
+Maintenant nous pouvons accéder à page par défaut d'apache depuis l'ensemble du réseau en utilisant l'IP de la machine hôtes. Soit http://192.168.42.45.
+
+Super donc nous avons un conteneur avec apache qui fonctionne , disponible sur l'ensemble du réseau , il est temps de mettre du contenu dessus . 
+
+## <a name="dockeriser_site-web" /> Mise en place du site web
+
+Nous arrivons tranquillement dans le dur, le mise en place du site web afin qu'il soit disponible pour tous. Plusieurs méthodes sont disponible pour cette opération, vous devrez choisir la plus approprié pour vous. Ce qui va probablement être un facteur décisionnel est la maturité de votre site , si ce dernier est plutôt statique ou énormément modifié.
+
+Pour rappel , le système de docker fut originalement mis en place afin de fournir une application ou un service avec un __packging__ complet ( OS + application + ensemble des dépendances ... ) nous parlons donc de version final ou du moins qui sera __repackgé__ lors de modification nous allons donc voir la première méthode en utilisant ce mode. 
+
+
+### <a name="dockeriser_site-web_git" /> Mise en place du site web via Git ou Subversion
+
+Une méthode est de brûler dans l'image de base le site web, personnellement je trouve cette solution la meilleur , utiliser le contrôleur de révision ( __Git__ ou __subversion__ ou autre ) comme source. Rappelez vous de la formation __git__ vous pourriez faire appel à une branche spécifique afin d'avoir une version exacte de votre site web dans votre conteneur apache.
+
+Voyons un exemple avec le dépôt git : [https://github.com/x3rus/siteweb\_formation](https://github.com/x3rus/siteweb_formation).
+
+Nous avons un site web dans git composé de 3 branches : __master__, 2.0 et 2.1 .
+
+Nous allons voir pour mettre en place les différentes version et la gestion de l'images . C'est partie modifions notre image afin d'avoir une page approprié avec la branche __master__
+
+        # Définition de l'image de Base ( distribution )
+        FROM i686/ubuntu
+        MAINTAINER Boutry Thomas 'thomas.boutry@x3rus.com'
+
+        # Activation du mode non interactif pour apt
+        ENV DEBIAN_FRONTEND noninteractive
+
+        # Installation des applications de Base
+        RUN apt-get update && apt-get install -y \
+          apache2 apache2-utils git && apt-get clean
+
+        # Fix timezone
+        RUN ln -s -f /usr/share/zoneinfo/Canada/Eastern /etc/localtime
+
+        ENV APACHE_RUN_USER  www-data
+        ENV APACHE_RUN_GROUP www-data
+        ENV APACHE_PID_FILE  /var/run/apache2.pid
+        ENV APACHE_RUN_DIR   /var/run/apache2
+        ENV APACHE_LOCK_DIR  /var/lock/apache2
+        ENV APACHE_LOG_DIR   /var/log/apache2
+
+        ENV SITE_DOCROOT /var/www/html/
+        ENV SITE_REPO https://github.com/x3rus/siteweb_formation
+        ENV SITE_VERSION master
+
+        # Mise en place du site
+        RUN rm -rf $SITE_DOCROOT  &&  git clone $SITE_REPO -b $SITE_VERSION $SITE_DOCROOT
+
+        # Port exposer 
+        EXPOSE 80
+
+        CMD ["/usr/sbin/apache2","-DFOREGROUND"]
+
+Petit ajustement dans la configuration premièrement en plus d'installer apache , nous installons l'application __git__ afin de nous permettre de récupérer la version du site web sur le dépôt. De plus j'ai défini 3 variables :
+
+* __SITE\_DOCROOT__ : répertoire où nous installons le site web
+* __SITE\_REPO__ : URL où faire le __checkout__ / la récupération du site web
+* __SITE\_VERSION__ : la branche que je désire extraire
+
+Si nous réalisons le __build__ et démarrons le conteneur nous aurons accès au site web .
+
+        $ docker build -t apache-train .
+        $ docker  run   apache-train
+        AH00558: apache2: Could not reliably determine the server's fully qualified domain name, using 172.17.0.8. Set the 'ServerName' directive globally to suppress this message
+
+
+Si nous désirons créer le conteneur pour la version 2.0 du site je n'ai qu'à modifier la variable __SITE\_VERSION__ . Bien entendu nous pourrions utiliser la même commande de __build__, mais profitons de l'occasion pour voir l'utilisation des __tags__ disponible pour l'image.
+
+    $ cat Dockerfile
+    [... OUTPUT COUPÉ ...]
+    ENV SITE_DOCROOT /var/www/html/
+    ENV SITE_REPO https://github.com/x3rus/siteweb_formation
+    ENV SITE_VERSION 2.0
+
+    # Mise en place du site
+    RUN rm -rf $SITE_DOCROOT  &&  git clone $SITE_REPO -b $SITE_VERSION $SITE_DOCROOT
+    [... OUTPUT COUPÉ ...]
+
+    $ docker build -t apache-train:2.0 .
+    [... OUTPUT COUPÉ ...]
+    Step 11 : ENV SITE_DOCROOT /var/www/html/
+     ---> Using cache
+     ---> ffb88a8f9010
+    Step 12 : ENV SITE_REPO https://github.com/x3rus/siteweb_formation
+     ---> Using cache
+     ---> 96a00982c41c
+    Step 13 : ENV SITE_VERSION 2.0
+     ---> Running in bb0f9948e540
+     ---> bb0edcfebf23
+    Removing intermediate container bb0f9948e540
+    Step 14 : RUN rm -rf $SITE_DOCROOT  &&  git clone $SITE_REPO -b $SITE_VERSION $SITE_DOCROOT
+     ---> Running in 620ecdce4428
+    Cloning into '/var/www/html'...
+     ---> 19218c816f5b
+    Removing intermediate container 620ecdce4428
+    Step 15 : EXPOSE 80
+     ---> Running in 0f3595f15808
+     ---> c74a55cf7036
+    Removing intermediate container 0f3595f15808
+    Step 16 : CMD /usr/sbin/apache2 -DFOREGROUND
+     ---> Running in f56d32de0082
+     ---> 8e8ba8bd17ac
+    Removing intermediate container f56d32de0082
+    Successfully built 8e8ba8bd17ac
+
+Comme vous pouvez le constater l'ensemble de la création du conteneur ne fut pas refait, comme nous avions des couches de création similaire entre la version __master__ et la version __2.0__ il réutilise les couches de création jusqu'à la première différence.
+
+Résultat si nous affichons les images disponible sur le système nous avons la version __master__ == __latest__ et la version 2.0 qui est nommé avec ce même numéro.
+
+        $ docker  images | grep apache
+        apache-train        2.0                 8e8ba8bd17ac        3 minutes ago       339.1 MB
+        apache-train        latest              865ad6322b1b        18 minutes ago      339.1 MB
+
+Maintenant vous pouvez démarrer la version de votre site web :
+
+        $ docker  run   apache-train 
+        AH00558: apache2: Could not reliably determine the server's fully qualified domain name, using 172.17.0.10. Set the 'ServerName' directive globally to suppress this message
+
+        $ docker  run   apache-train:2.0
+         AH00558: apache2: Could not reliably determine the server's fully qualified domain name, using 172.17.0.11. Set the 'ServerName' directive globally to suppress this message
+
+
+### <a name="dockeriser_site-volume" /> Mise en place du site web avec un volume 
+
+Pour les personnes ayant un site web "mature" qui ne bouge pas beaucoup ou qui est en évolution avec un système de __release__ bien définie ceci est très bien cependant si vous avez un petit site personnel qui bouge tranquillement dans le temps il est probable que cette solution soit contraignante. Nous allons donc voir une autre solution , nous allons extériorisé le site web du conteneur. Cette solution est moins belle , car n'ayant pas le site web inclut dans le conteneur ce dernier n'est pas complet , mais chacun ça réalité avec les contraintes.
+
+Voyons le système de volume ce mécanisme permet de définir un répertoire du __docker host__ dans le conteneur. Je vais commencer par enlever la configuration la commande __git__ du __DockerFile__ afin de ne plus inclure le site web dans le conteneur.
+
+Voici le résultat du __DockerFile__ :
+
+        # Définition de l'image de Base ( distribution )
+        FROM i686/ubuntu
+        MAINTAINER Boutry Thomas 'thomas.boutry@x3rus.com'
+
+        # Activation du mode non interactif pour apt
+        ENV DEBIAN_FRONTEND noninteractive
+
+        # Installation des applications de Base
+        RUN apt-get update && apt-get install -y \
+          apache2 apache2-utils git && apt-get clean
+
+        # Fix timezone
+        RUN ln -s -f /usr/share/zoneinfo/Canada/Eastern /etc/localtime
+
+        ENV APACHE_RUN_USER  www-data
+        ENV APACHE_RUN_GROUP www-data
+        ENV APACHE_PID_FILE  /var/run/apache2.pid
+        ENV APACHE_RUN_DIR   /var/run/apache2
+        ENV APACHE_LOCK_DIR  /var/lock/apache2
+        ENV APACHE_LOG_DIR   /var/log/apache2
+
+        # Port exposer 
+        EXPOSE 80
+
+        CMD ["/usr/sbin/apache2","-DFOREGROUND"]
+
+Je __build__ l'image avec le __tag:flat__ :
+
+        $ docker build -t apache-train:flat .
+        Sending build context to Docker daemon 44.54 kB
+        Sending build context to Docker daemon
+        Step 0 : FROM i686/ubuntu
+         ---> 6a6004b92956
+        [ ... OUTPUT COUPÉ ...]
+
+        Removing intermediate container 71625a7802d8
+        Successfully built 0e166a670d17
+
+        $ docker  images | grep flat
+        apache-train        flat                0e166a670d17        About a minute ago   338.6 MB
+
+Si on démarre le conteneur nous aurons la page par défaut d'apache :
+
+        $ docker  run apache-train:flat
+        AH00558: apache2: Could not reliably determine the server's fully qualified domain name, using 172.17.0.1. Set the 'ServerName' directive globally to suppress this message
+
+ 
+Arrêtons le conteneur et réalisons le point de montage / **volume**. Premièrement je crée le site web dans le répertoire __/data/apache/html__ et redémarre le conteneur apache avec le volume.
+
+        $ sudo mkdir -p /data/apache/html
+        $ sudo vim /data/apache/html/index.html
+        $ sudo cat /data/apache/html/index.html
+        Super site web directement
+        dans le docker host
+
+Démarrage du conteneur 
+
+        $ docker  run -v /data/apache/html/:/var/www/html apache-train:flat
+        AH00558: apache2: Could not reliably determine the server's fully qualified domain name, using 172.17.0.2. Set the 'ServerName' directive globally to suppress this message
+
+Si nous allons à l'URL : http://172.17.0.2 , nous aurons la page précédemment créer , nous pouvons modifier le fichier __index.html__ sans être obligé de refaire / recréer un conteneur.
+
+Mais je le répète cette solution à un inconvénient majeur le fait que le conteneur n'est pas complet cependant ceci vous permet d'isoler facilement votre application apache du reste du système. 
+Comme j'aime moins cette solution je vais retourné à la méthode avec le système d'extraction du site avec __git__ , c'est ma formation je suis libre :P , par contre nous allons voir un usage intéressant du volume , tous de suite :D.
+
+### <a name="dockeriser_volume4data" /> Conservation des données du sites (volume et nommage du conteneur)
+
+Reprenons donc notre conteneur avec l'extraction du site avec le système de git , je vais aussi réaliser une petite modification afin d'avoir __php__ de présent afin de faire une démonstration. De plus j'ai créer la branche 2.2 du site web , car nous avons une nouvelle version celle ci utilisant __php__.
+
+Voici le résultat du __DockerFile__ : 
+
+        # Définition de l'image de Base ( distribution )
+        FROM i686/ubuntu
+        MAINTAINER Boutry Thomas 'thomas.boutry@x3rus.com'
+
+        # Activation du mode non interactif pour apt
+        ENV DEBIAN_FRONTEND noninteractive
+
+        # Installation des applications de Base
+        RUN apt-get update && apt-get install -y \
+          apache2 apache2-utils git libapache2-mod-php5 && apt-get clean
+
+        # Fix timezone
+        RUN ln -s -f /usr/share/zoneinfo/Canada/Eastern /etc/localtime
+
+        ENV APACHE_RUN_USER  www-data
+        ENV APACHE_RUN_GROUP www-data
+        ENV APACHE_PID_FILE  /var/run/apache2.pid
+        ENV APACHE_RUN_DIR   /var/run/apache2
+        ENV APACHE_LOCK_DIR  /var/lock/apache2
+        ENV APACHE_LOG_DIR   /var/log/apache2
+
+        ENV SITE_DOCROOT /var/www/html/
+        ENV SITE_REPO https://github.com/x3rus/siteweb_formation
+        ENV SITE_VERSION 2.2
+
+        # Mise en place du site
+        RUN rm -rf $SITE_DOCROOT  &&  git clone $SITE_REPO -b $SITE_VERSION $SITE_DOCROOT && \
+            chown $APACHE_RUN_USER:$APACHE_RUN_GROUP $SITE_DOCROOT/data
+
+        # Port exposer
+        EXPOSE 80
+
+        CMD ["/usr/sbin/apache2","-DFOREGROUND"]
+
+Je réalise l'image __apache-train:2.2__ avec cette nouvelle configuration
+
+        $ docker build -t apache-train:2.2 .
+
+On l'exécute 
+
+        $ docker run apache-train:2.2
+        AH00558: apache2: Could not reliably determine the server's fully qualified domain name, using 172.17.0.7. Set the 'ServerName' directive globally to suppress this message
+
+Si vous allez à la page web http://172.17.0.7 vous aurez la page avec le mouton, j'ai ajouté un petit fichier __php__ nommé __cfile.php__ ce dernier fait la création de 10 fichiers dans le répertoire __/var/www/html/data__ sur le serveur.
+
+Regardons ensemble le mécanisme , avant de générer les fichiers nous allons voir le contenu du répertoire , pour ce faire nous allons allez en mode interactif dans le conteneur. J'utilise la commande **docker ps** pour lister les conteneurs en exécution. 
+
+        $ docker ps
+        CONTAINER ID    IMAGE             COMMAND                CREATED        STATUS         PORTS    NAMES
+        e05bf8a9adae    apache-train:2.2  "/usr/sbin/apache2 -   4 seconds ago  Up 3 seconds   80/tcp   admiring_feynman
+
+Nous voyons notre conteneur basé sur l'image **apache-train:2.2** , qui est en exécution depuis 4 secondes, le nom du conteneur est **admiring_feynman**. Je vais utilisé ce nom pour m'y connecter.
+
+        $ docker exec -it admiring_feynman bash
+        root@e05bf8a9adae:/# ls
+        bin  boot  dev  etc  home  lib  media  mnt  opt  proc  root  run  sbin  srv  sys  tmp  usr  var
+        root@e05bf8a9adae:/# ls /var/www/html/
+        LICENSE  cfile.php  data  data.dtd  dessin_mouton.jpg  index.html
+        root@e05bf8a9adae:/# ls /var/www/html/data
+        README
+
+
+Le site web est présent ainsi que le répertoire contenant les données , si nous accédons à l'URL __http://172.17.0.7/cfile.php__ vous devriez avoir l'information suivante dans votre browser :
+
+        58
+        58
+        58
+        58
+        58
+        58
+        58
+        58
+        58
+        58
+
+De plus , nous aurons 10 fichiers dans le répertoire __/var/www/html/data__ :
+
+        root@e05bf8a9adae:/# ls /var/www/html/data
+        0.txt  1.txt  2.txt  3.txt  4.txt  5.txt  6.txt  7.txt  8.txt  9.txt  README
+
+Si j'arrête le conteneur , et le redémarre , le tout proprement :
+
+        root@e05bf8a9adae:/# exit
+        $ docker  stop admiring_feynman
+        $ docker run apache-train:2.2
+        AH00558: apache2: Could not reliably determine the server's fully qualified domain name, using 172.17.0.8. Set the 'ServerName' directive globally to suppress this message
+
+
+        $ docker  ps
+        CONTAINER ID  IMAGE               COMMAND                CREATED         STATUS         PORTS    NAMES
+        4dcddcf83a7b  apache-train:2.2    "/usr/sbin/apache2 -   48 seconds ago  Up 46 seconds  80/tcp   lonely_pare
+
+
+        $ docker exec -it lonely_pare bash
+        root@4dcddcf83a7b:/# ls /var/www/html/  
+        LICENSE  cfile.php  data  data.dtd  dessin_mouton.jpg  index.html
+        root@4dcddcf83a7b:/# ls /var/www/html/data
+        README
+
+
+Si vous vous rappelez lors de la présentation de docker nous avions fait mention que le système fonctionne avec des couches (__layers__) la couche supérieur est par défaut éphémère, elle n'est présente que lors de l'exécution du conteneur.
+
+<img src="http://docs.master.dockerproject.org/terms/images/docker-filesystems-multilayer.png"  width="600px" />
+
+#### <a name="dockeriser_volume4dataInfo" /> Définition d'un volume pour les données
+
+Donc l'ensemble des données furent écrite dans cette couche qui a disparue lors de l'arrêt du conteneur. Ceci peut être très problématique , afin de corriger ce problème nous pouvons mettre en place le système de volume non pas sur l'ensemble du site web mais sur les données écrite lors de l'utilisation du conteneur.
+
+        $ sudo mkdir -p /data/data-site/
+        $ docker run -v /data/data-site/:/var/www/html/data apache-train:2.2
+        AH00558: apache2: Could not reliably determine the server's fully qualified domain name, using 172.17.0.1. Set the 'ServerName' directive globally to suppress this message
+
+
+        $ docker  ps
+        CONTAINER ID   IMAGE             COMMAND                CREATED       STATUS       PORTS     NAMES
+        cd07dc0a105c   apache-train:2.2  "/usr/sbin/apache2 -   5 seconds ago Up 3 seconds 80/tcp    jolly_pare
+        $ docker  exec -it jolly_pare bash
+        root@cd07dc0a105c:/# ls /var/www/html/data
+        root@cd07dc0a105c:/#
+
+Si  nous accédons au site web http://172.17.0.1 , nous voyons bien la page web avec le mouton :D. Si nous accédons à l'URL __http://172.17.0.1/cfile.php__ nous ne voyons pas la liste de chiffre comme avant :-/. Analysons ensemble le problème ceci est un problème "classique" lors d'utilisation des volumes. 
+Commençons par les logs du serveur apache qui nous offrira probablement de l'information :
+
+        root@cd07dc0a105c:/# tail /var/log/apache2/error.log
+        [Wed Aug 03 08:25:07.437086 2016] [:error] [pid 7] [client 172.17.42.1:41958] PHP Warning:  fclose() expects parameter 1 to be resource, boolean given in /var/www/html/cfile.php on line 9
+        [Wed Aug 03 08:25:07.437132 2016] [:error] [pid 7] [client 172.17.42.1:41958] PHP Warning:  fopen(./data/7.txt): failed to open stream: Permission denied in /var/www/html/cfile.php on line 7
+
+Le message est claire le système apache n'est pas en mesure d'ouvrir / écrire dans le répertoire **data** , validons les permission de ce répertoire.
+
+        root@cd07dc0a105c:/# ls -ld /var/www/html/data
+        drwxr-xr-x 2 root root 4096 Aug  3 08:22 /var/www/html/data
+
+**Oupss** pourtant ça fonctionnait avant , nous l'avions définie dans le fichier __DockerFile__ lors de la création du conteneur . Voici ce qui est dans le __DockerFile__ pour la création du répertoire :
+
+        # Mise en place du site
+        RUN rm -rf $SITE_DOCROOT  &&  git clone $SITE_REPO -b $SITE_VERSION $SITE_DOCROOT && \
+            chown $APACHE_RUN_USER:$APACHE_RUN_GROUP $SITE_DOCROOT/data
+
+Lors de l'utilisation du volume , ce dernier à le dessus sur la couche système du conteneur , c'est un peu comme quand on fait un __mount bind__ nous nous retrouvons avec le nouveau point de montage par dessus le système de fichier original. La solution définir les bonne permissions sur le système de fichier du **docker host**. Nous devons donc permettre à l'utilisateur __www-data__ d'écrite dans le répertoire du **docker host** soit __/data/data-site__ .
+
+        $ sudo chown www-data:www-data /data/data-site
+        chown: invalid user: ‘www-data:www-data’
+
+**Oupss** l'utilisateur __www-data__ n'existe pas sur mon système :-(, il n'est présent QUE dans mon conteneur , comment puis je solutionner ce problème ?
+En fait le file système GNU/Linux il s'en fou du nom :P, c'est vraiment uniquement pour que ce soit plus simple pour l'humain mais le système ne conserve QUE le __UID__ et __GID__ de l'utilisateur. Donc si je connais ces informations je peux les associé au répertoire et ils seront bien représenté dans le conteneur ... Démonstration , premièrement je récupère le __UID__ et __GID__ de l'utilisateur dans le conteneur 
+
+        root@cd07dc0a105c:/# id www-data
+        uid=33(www-data) gid=33(www-data) groups=33(www-data)
+
+        $ sudo chown 33:33 /data/data-site/
+
+        root@cd07dc0a105c:/# ls -ld /var/www/html/data
+        drwxr-xr-x 2 www-data www-data 4096 Aug  3 08:22 /var/www/html/data
+
+**WOOT** magie :D , validons que ceci fonctionne à présent, je retourne donc à l'URL __http://172.17.0.1/cfile.php__ , maintenant j'ai la liste de numéro . Si nous regardons dans le conteneur et sur le __docker host__ nous aurons les données.
+
+        root@cd07dc0a105c:/# ls -l /var/www/html/data 
+        total 40
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 08:42 0.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 08:42 1.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 08:42 2.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 08:42 3.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 08:42 4.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 08:42 5.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 08:42 6.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 08:42 7.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 08:42 8.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 08:42 9.txt
+
+        $ ls -l /data/data-site/
+        total 40
+        -rw-r--r-- 1 http http 58 Aug  3 08:42 0.txt
+        -rw-r--r-- 1 http http 58 Aug  3 08:42 1.txt
+        -rw-r--r-- 1 http http 58 Aug  3 08:42 2.txt
+        -rw-r--r-- 1 http http 58 Aug  3 08:42 3.txt
+        -rw-r--r-- 1 http http 58 Aug  3 08:42 4.txt
+        -rw-r--r-- 1 http http 58 Aug  3 08:42 5.txt
+        -rw-r--r-- 1 http http 58 Aug  3 08:42 6.txt
+        -rw-r--r-- 1 http http 58 Aug  3 08:42 7.txt
+        -rw-r--r-- 1 http http 58 Aug  3 08:42 8.txt
+        -rw-r--r-- 1 http http 58 Aug  3 08:42 9.txt
+
+Si nous arrêtons le conteneur et le redémarrons nous aurons toujours les données car elles sont contenu sur le __docker host__.
+
+        
+        $ docker  ps
+        CONTAINER ID   IMAGE             COMMAND                CREATED       STATUS       PORTS     NAMES
+        cd07dc0a105c   apache-train:2.2  "/usr/sbin/apache2 -   5 seconds ago Up 3 seconds 80/tcp    jolly_pare
+        $ docker  stop jolly_pare
+        jolly_pare
+
+        $ docker run -v /data/data-site/:/var/www/html/data apache-train:2.2
+        AH00558: apache2: Could not reliably determine the server's fully qualified domain name, using 172.17.0.2. Set the 'ServerName' directive globally to suppress this message
+
+
+        $ docker  ps
+        CONTAINER ID   IMAGE             COMMAND                CREATED          STATUS       PORTS     NAMES
+        bdb7aab8b32d   apache-train:2.2  "/usr/sbin/apache2 -   25 seconds ago  Up 24 seconds 80/tcp    kickass_newton
+        $ docker  exec -it kickass_newton bash
+        root@bdb7aab8b32d:/# ls -l /var/www/html/data
+        total 40
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 08:42 0.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 08:42 1.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 08:42 2.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 08:42 3.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 08:42 4.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 08:42 5.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 08:42 6.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 08:42 7.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 08:42 8.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 08:42 9.txt
+
+#### <a name="dockeriser_Name4dataInfo" /> Nommage du conteneur pour conserver les données du site
+
+L'autre méthode est de s'assurer que la couche supérieur soit conserver et rappeler lors du démarrage du conteneur :
+
+<img src="http://docs.master.dockerproject.org/terms/images/docker-filesystems-multilayer.png"  width="600px" />
+
+Pour ce faire nous nommerons le conteneur, ceci nous donnera un nom fixe contrairement à ceux généré dynamiquement comme nous avons utilisé jusqu'à présent. Démonstration de l'opération sans le volume mais avec le nommage du conteneur.
+
+        $ docker run --name x3rus_site  apache-train:2.2
+        AH00558: apache2: Could not reliably determine the server's fully qualified domain name, using 172.17.0.3. Set the 'ServerName' directive globally to suppress this message
+
+J'ai donc démarrer l'image __apache-train:2.2__ en nommant explicitement le conteneur __x3rus\_site__.
+
+        CONTAINER ID   IMAGE            COMMAND                CREATED        STATUS         PORTS   NAMES
+        14979a4cf52c   apache-train:2.2 "/usr/sbin/apache2 -   49 seconds ago Up 48 seconds  80/tcp  x3rus_site 
+
+Si nous regardons le contenu du répertoire de données du site :
+
+        $ docker  exec -it x3rus_site bash
+        root@14979a4cf52c:/# ls -l /var/www/html/data
+        total 4
+        -rw-r--r-- 1 root root 40 Aug  2 08:32 README
+
+J'accède à l'URL de création des fichiers : __http://172.17.0.3/cfile.php__, j'ai bien la liste de numéro et si nous regardons le contenu du répertoire l'ensemble est présent :
+
+        root@14979a4cf52c:/# ls -l /var/www/html/data
+        total 44
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 09:00 0.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 09:00 1.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 09:00 2.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 09:00 3.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 09:00 4.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 09:00 5.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 09:00 6.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 09:00 7.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 09:00 8.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 09:00 9.txt
+        -rw-r--r-- 1 root     root     40 Aug  2 08:32 README
+
+Je ferme le conteneur et vais le redémarrer 
+
+        $ docker  stop x3rus_site
+        x3rus_site
+
+        $ docker  start x3rus_site
+        x3rus_site
+
+        $ docker ps
+        CONTAINER ID   IMAGE            COMMAND                CREATED        STATUS         PORTS   NAMES
+        14979a4cf52c   apache-train:2.2 "/usr/sbin/apache2 -   8 hours ago    Up 10 seconds  80/tcp  x3rus_site 
+
+        $ docker  exec -it x3rus_site bash
+        root@14979a4cf52c:/# ls -l /var/www/html/data
+        total 44
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 09:00 0.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 09:00 1.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 09:00 2.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 09:00 3.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 09:00 4.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 09:00 5.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 09:00 6.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 09:00 7.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 09:00 8.txt
+        -rw-r--r-- 1 www-data www-data 58 Aug  3 09:00 9.txt
+        -rw-r--r-- 1 root     root     40 Aug  2 08:32 README
+
+Comme nous pouvons le voir le conteneur contient toujours l'ensemble des données généré par le système , la couche (__layeur__) de données fut conservé malgré le redémarrage. Cette couche n'est cependant conservé que sur le docker __host__ et non sur l'image original, à ce stade vous devais planifier votre gestion de données :D.
+
+Rien ne vous empêche d'utiliser les deux méthode le volume ET le nommage du conteneur !!
+
+## <a name="dockeriser_config" /> Configuration 
+
+### <a name="dockeriser_config_Apache" /> Configuration Apache
+
+Nous avons couvert la question de la mise en place du site web , ainsi que la question du stockage des informations , mais rien au niveau de la configuration du serveur apache. Je pense que le moment est venu de couvrir ce point non moins critique surtout si vous avez un site web complet voir complexe. 
+
+Les solutions sont encore multiple , bien entendu il est toujours possible de réaliser un point de montage avec le volume, cependant vous risquez d'avoir rapidement un problème de gestion ou de standardisation si vous avez un nombre important de serveur. 
+
+La configuration Apache est lié à votre application, si vous avez des instructions telle que __mod\_rewrite__ ou des sections d'authentification ceci s'applique tous le temps. Nous allons donc mettre en place une configuration générique standardisé dans l'image de base puis nous la personnaliserons lors de l'exécution du conteneur.
+
+Premièrement modifions le site web le dépôt **git** afin d'inclure la configuration. 
+
+        $ cd siteweb_formation/
+        $ ls
+        cfile.php  data  data.dtd  dessin_mouton.jpg  index.html  LICENSE
+        $ git branch
+          2.0
+          2.1
+          * 2.2
+          master
+
+Nous allons crée la branche 3.0 afin d'inclure la nouvelle configuration , ce sera plus propre.
+
+        $ git checkout -b 3.0
+        Switched to a new branch '3.0'
+
+Je vais mettre l'ensemble du site sous un répertoire **docroot** et définir la configuration apache sous **apacheConf** , je crée aussi un répertoire **privates** pour les données hors site.
+
+        $ mkdir docroot
+        $ mv * docroot
+        mv: cannot move ‘docroot’ to a subdirectory of itself, ‘docroot/docroot’
+        $ mkdir apacheConf privates
+
+Voici la configuration apache :
+
+        $ cat apacheConf/siteA.conf
+        <VirtualHost *:80>
+
+                ServerAdmin ${SERVER_ADMIN}
+                DocumentRoot /var/www/html/docroot
+
+                <Directory /var/www/html/docroot/data>
+                    Options Indexes
+                    AllowOverride None
+                    #  Section d'authentification
+                    AuthType Basic
+                    AuthName "Authentication Required"
+                    AuthUserFile "/var/www/html/privates/htpasswd"
+                    Require ${VALIDE_USER}
+                </Directory>
+
+                ErrorLog ${APACHE_LOG_DIR}/error.log
+                CustomLog ${APACHE_LOG_DIR}/access.log combined
+        </VirtualHost>
+
+Comme vous pouvez le voir j'ai définie des variables d'environnement pour l'instruction **ServerAdmin** et **Require**. Ceci nous permettra d'avoir UNE image docker utilisable pour l'ensemble des déploiements. Nous allons voir comment définir les valeurs lors du démarrage du conteneur. Nous pouvons planifier que la valeur en place pour le courriel soit distinct de l'environnement de développement ou de production , ceci est la même chose pour l'autorisation d'accès au répertoire de données.
+
+Comme vous pouvez le voir j'ai définie un fichier de mot de passe dans le répertoire **privates** je vais donc aussi définir un fichier __htpasswd__.
+
+
+        $ htpasswd -c privates/htpasswd admin
+        $ htpasswd  privates/htpasswd tom 
+        $ htpasswd  privates/htpasswd bob 
+
+        $ cat privates/htpasswd 
+        tom:$apr1$nh2m2SRP$Vr7T.s8jH3n2F6tQECUc9/
+        bob:$apr1$UTUQuKYU$Ot1G/ICuCWvtdF48C4Lkg1
+        robert:$apr1$.2jP2rT4$c7Ddv9YMdzYj.UYpUReFi.
+        admin:$apr1$bYi5/UtQ$17RBM3ieAzaQRRIYJcOHO.
+
+On ajoute le tous dans git et on pousse au serveur git :D.
+
+        $ git add *
+        $ git commit -a -m "Version 3.0 avec configuration apache plus fichier de mot de passe"
+        $ git push origin master
+
+On modifie le __DockerFile__ à présent afin de refléter cette nouvelle configuration.
+
+        $ cat DockerFile
+        FROM i686/ubuntu
+        MAINTAINER Boutry Thomas 'thomas.boutry@x3rus.com'
+
+        # Activation du mode non interactif pour apt
+        ENV DEBIAN_FRONTEND noninteractive
+
+        # Installation des applications de Base
+        RUN apt-get update && apt-get install -y \
+          apache2 apache2-utils git libapache2-mod-php5 && apt-get clean
+
+        # Fix timezone
+        RUN ln -s -f /usr/share/zoneinfo/Canada/Eastern /etc/localtime
+
+        ENV APACHE_RUN_USER  www-data
+        ENV APACHE_RUN_GROUP www-data
+        ENV APACHE_PID_FILE  /var/run/apache2.pid
+        ENV APACHE_RUN_DIR   /var/run/apache2
+        ENV APACHE_LOCK_DIR  /var/lock/apache2
+        ENV APACHE_LOG_DIR   /var/log/apache2
+
+        ENV SITE_DOCROOT /var/www/html/
+        ENV SITE_REPO https://github.com/x3rus/siteweb_formation
+        ENV SITE_VERSION 3.0
+
+        # Mise en place du site
+        RUN rm -rf $SITE_DOCROOT  &&  git clone $SITE_REPO -b $SITE_VERSION $SITE_DOCROOT && \
+            chown $APACHE_RUN_USER:$APACHE_RUN_GROUP $SITE_DOCROOT/docroot/data
+
+        RUN cp $SITE_DOCROOT/apacheConf/* /etc/apache2/sites-available/ && \
+            a2dissite 000-default && a2ensite siteA 
+
+        # Port exposer 
+        EXPOSE 80
+
+        CMD ["/usr/sbin/apache2","-DFOREGROUND"]
+
+On build le tout :
+
+        $ docker build -t apache-train:3.0 .
+
+
+On exécute : 
+
+        $ docker run  apache-train:3.0
+        [Wed Aug 03 17:43:36.836978 2016] [core:warn] [pid 1] AH00111: Config variable ${SERVER_ADMIN} is not defined
+        [Wed Aug 03 17:43:36.839862 2016] [core:warn] [pid 1] AH00111: Config variable ${VALIDE_USER} is not defined
+        AH00526: Syntax error on line 14 of /etc/apache2/sites-enabled/siteA.conf:
+        Unknown Authz provider: ${VALIDE_USER}
+
+**Oupss**  effectivement j'ai définie des configurations particulière via les variables d'environnement dans la configuration d'apache mais je ne les ai pas fournit au démarrage ... Corrigeons le problème tous de suite. 
+Dans l'exemple ci-dessous je démarrage avec un courriel bidon pour l'administrateur ou je permet à n'importe quelle utilisateur valide d'établir une connexion dans le répertoire **data**
+
+        $ docker run  --env SERVER_ADMIN=toto@x3rus.com --env VALIDE_2USER=valid-user  apache-train:3.0
+        AH00558: apache2: Could not reliably determine the server's fully qualified domain name, using 172.17.0.10. Set the 'ServerName' directive globally to suppress this message
+
+Voici un autre exemple d'utilisation pour la production par exemple :
+
+        $ docker run  --env SERVER_ADMIN=prod@x3rus.com --env VALIDE_2USER="user admin" apache-train:3.0
+        AH00558: apache2: Could not reliably determine the server's fully qualified domain name, using 172.17.0.6. Set the 'ServerName' directive globally to suppress this message
+
+Dans ce dernier exemple uniquement le compte __admin__ peut voir le contenu du répertoire .
+
+### <a name="dockeriser_config_App" /> Configuration Applicative
+
+Super donc la gestion de configuration apache est fait , il faut mettre plus de viande selon vos besoin mais le concept est présenté. Passons maintenant à la configuration applicative , en effet il est fort probable que si votre application utilise une Base de donnée pour fonctionner cette dernière n'est pas la même pour la production ou le développement.
+
+Je vais créer une autre branche , oui oui encore :P
+
+
+        $ git checkout -b 3.1
+        Switched to a new branch '3.1'
+        $ vim docroot/config.conf
+        $ cat docroot/config.conf
+        database_host = ${DB_HOST}
+        database_user = ${DB_USER}
+        database_pass = ${DB_PASS}
+        database_db   = ${DB_DB}
+
+J'utilise encore la même définition de variable ... On commit et on valide , c'est exactement le moment où il ne faut pas sauté la présentation, car ça ne marchera pas je vous le dit tous de suite :P.
+
+        $ git commit -a -m "Ajout de la configuration DB"
+        [3.1 2e804ed] Ajout de la configuration DB
+         1 file changed, 4 insertions(+)
+         create mode 100644 docroot/config.conf
+        $ git push origin 3.1
+
+Je modifie le __DockerFile__ afin d'utiliser la nouvelle branche lors du __build__
+
+        ENV SITE_VERSION 3.1
+
+Puis nous __buildons__ : 
+
+        $ docker build -t apache-train:3.1 .
+
+On utilise le passage d'argument pour démarrer le conteneur
+
+        $ docker run  --env SERVER_ADMIN=toto@x3rus.com --env VALIDE_USER="user admin" --env DB_HOST=db.x3rus.com --env DB_USER=toto --env DB_PASS=password --env DB_DB=mydb  apache-train:3.1
+        AH00558: apache2: Could not reliably determine the server's fully qualified domain name, using 172.17.0.10. Set the 'ServerName' directive globally to suppress this message
+
+
+Nous allons à L'URL : http://172.17.0.10/config.conf et là ... Heu heu ... Ça n'a pas changé !! Le __daemon__ apache est assez intelligent pour prendre en charge les variables d'environnement malheureusement ce n'est pas natif pour l'ensemble des applications . Nous allons devoir mettre un mécanisme supplémentaire. Lors du démarrage du conteneur je vais extraire les variables d'environnement et réaliser un petit **sed** (__search and replace__) afin de définir les bonnes valeurs.
+
+Commençons par l'écriture du script :
+
+        $ mkdir scripts
+        $ vim scripts/sed_var.sh
+        $ cat scripts/sed_var.sh
+        #!/bin/bash
+
+        LST_VAR=$(env | grep ^DB)
+
+        for env_2_change in $LST_VAR ; do
+            ENV_NAME=$(echo $env_2_change | cut -d "=" -f 1)
+            ENV_VAL=$(echo $env_2_change | cut -d "=" -f 2-)
+            sed -i "s/\${$ENV_NAME}/$ENV_VAL/g" docroot/config.conf
+        done
+
+Rapidement, je met toute les variables débutant par les lettres __DB__ et je met ça dans une liste. Je parcours à l'aide d'une boucle cette liste et sépare le nom de la variable (__ENV\_NAME__) avec la valeur  (__ENV\_VAL__). Je réalise un **sed** qui modifiera le fichier grâce à l'option **-i** .  Je présente le concept , à vous de l'adapter pour vos besoins la complexité de ce scripts peut augmenter il serai possible aussi d'utiliser __ansible__ ou __puppet__ à vous de voir :D.
+
+Donc ce script doit être exécuté lors du démarrage du conteneur , en plus de l'exécution du processus apache bien entendu . Le changement de variable devrait être réalisé préférablement avec le démarrage.
+Nous allons modifier le __DockerFile__ afin de permettre cette opération.
+
+Je vais donc écrire un autre script de démarrage __start.sh__ qui réalisera ces deux opérations.
+
+        $ vim scripts/start.sh
+        $ cat scripts/start.sh
+        #!/bin/bash
+
+        # Changement des variables 
+        /usr/local/sbin/sed_var.sh
+            
+        # Démarrage du processus apache 
+        /usr/sbin/apache2 -DFOREGROUND
+
+On modifie le __DockerFile__ :
+
+        $ cat DockerFile
+        [ ... OUTPUT COUPÉ ...]
+        # Mise en place du site
+        RUN rm -rf $SITE_DOCROOT  &&  git clone $SITE_REPO -b $SITE_VERSION $SITE_DOCROOT && \
+            chown $APACHE_RUN_USER:$APACHE_RUN_GROUP $SITE_DOCROOT/docroot/data
+
+        RUN cp $SITE_DOCROOT/apacheConf/* /etc/apache2/sites-available/ && \
+            a2dissite 000-default && a2ensite siteA 
+
+        # Copy SCRIPTS
+        COPY scripts/*.sh /usr/local/sbin/ 
+        RUN chmod a+x /usr/local/sbin/*.sh
+
+        # Port exposer 
+        EXPOSE 80
+
+        CMD ["/usr/local/sbin/start.sh"]
+
+Donc j'ai ajouté la __COPY__ des nouveaux scripts , j'ai modifié les permissions __RUN__ et j'ai changer la commande d'exécution du conteneur afin d'utiliser le script __start.sh__.
+
+On lance le __build__ (on va chercher éventuellement un petit café :) ), et on va exécuter le conteneur :
+
+        $ docker build -t apache-train:3.1 .
+        $ docker run  --env SERVER_ADMIN=toto@x3rus.com --env VALIDE_USER="user admin" --env DB_HOST=db.x3rus.com --env DB_USER=toto --env DB_PASS=password --env DB_DB=mydb  apache-train:3.1
+        AH00558: apache2: Could not reliably determine the server's fully qualified domain name, using 172.17.0.4. Set the 'ServerName' directive globally to suppress this message
+
+
+Si nous allons à l'URL __http://172.17.0.4/config.conf__ l'ensemble des valeurs furent modifier !!! **WOOT**.
+
+Grâce à cette solution vous avez **UNE** images de référence et lors de son utilisation le contexte est passé pour distingué les spécificité , telle que l'environnement de __DEV__ ou autre.
+
+
+## <a name="dockeriser_apache_logs" /> Visualisation des logs Apache
+
+Continuons le processus d'amélioration de la solution ;-), en fait même à la fin de cette présentation il y aura des améliorations encore possible mais faut savoir s'arrêter parfois .
+
+Donc nous avons une image contenant notre site et une configuration de base qui est configurer au démarrage du conteneur. Bien entendu comme tous système en fonction, il est à prévoir des problème d'opération, nous serons donc dans l'obligation de consulter les logs applicatifs. La meilleur solution est d'avoir un serveur __syslog__ centralisé permettant la récupération de l'ensemble des logs du réseaux ce qui permet de réaliser une analyse , avec génération de graphique , etc... 
+
+Bon ceci étant dit si vous avez quelque conteneur vous avez pas envie de rajouter cette couche de complexité, nous allons donc voir pour visualiser les logs d'apache avec l'instruction __docker logs__.
+
+Actuellement si nous réalisons l'instruction __docker logs__ nous avons ce que la commande __/usr/sbin/apache2 -DFOREGROUND__ fournit à l'écran . Il est probable que vous préfériez voir les messages d'erreurs et / ou éventuellement les logs d'accès au site. 
+
+Il faut savoir que l'instruction __docker logs__ peut être exécuté à distance ou certaine application permette d'afficher cette information via une page web ... Par exemple __docker UI__ si je ne me trompe pas :D.
+
+Réalisons la modification du Docker afin d'avoir cette fonctionnalité pour ce faire nous allons modifier le script de démarrage. 
+
+        $ vim scripts/start.sh
+        $ cat scripts/start.sh
+        #!/bin/bash
+
+        # Changement des variables 
+        /usr/local/sbin/sed_var.sh
+
+        # Démarrage du processus apache 
+        /usr/sbin/apache2 
+
+        # Affichage des logs 
+        tail -f  /var/log/apache2/error.log /var/log/apache2/access.log
+
+Nous __buildons__ le conteneur et on l'exécute  :
+
+        $ docker build -t apache-train:3.1 .
+        $ docker run  --env SERVER_ADMIN=toto@x3rus.com --env VALIDE_USER="user admin" --env DB_HOST=db.x3rus.com --env DB_USER=toto --env DB_PASS=password --env DB_DB=mydb  apache-train:3.1
+        AH00558: apache2: Could not reliably determine the server's fully qualified domain name, using 172.17.0.3. Set the 'ServerName' directive globally to suppress this message
+        ==> /var/log/apache2/error.log <==
+        [Mon Aug 01 21:39:05.645683 2016] [mpm_event:notice] [pid 2581:tid 3074931328] AH00489: Apache/2.4.7 (Ubuntu) configured -- resuming normal operations
+        [Mon Aug 01 21:39:05.645902 2016] [core:notice] [pid 2581:tid 3074931328] AH00094: Command line: '/usr/sbin/apache2'
+        [Mon Aug 01 21:39:11.891689 2016] [mpm_event:notice] [pid 2581:tid 3074931328] AH00491: caught SIGTERM, shutting down
+        [Mon Aug 01 21:39:12.080570 2016] [mpm_prefork:notice] [pid 3709] AH00163: Apache/2.4.7 (Ubuntu) configured -- resuming normal operations
+        [Mon Aug 01 21:39:12.083256 2016] [core:notice] [pid 3709] AH00094: Command line: '/usr/sbin/apache2'
+        [Mon Aug 01 21:39:13.577065 2016] [mpm_prefork:notice] [pid 3709] AH00169: caught SIGTERM, shutting down
+        [Mon Aug 01 21:39:14.838949 2016] [mpm_prefork:notice] [pid 3785] AH00163: Apache/2.4.7 (Ubuntu) PHP/5.5.9-1ubuntu4.17 configured -- resuming normal operations
+        [Mon Aug 01 21:39:14.839074 2016] [core:notice] [pid 3785] AH00094: Command line: '/usr/sbin/apache2'
+
+        ==> /var/log/apache2/access.log <==
+
+        ==> /var/log/apache2/error.log <==
+        [Fri Aug 05 17:07:36.342459 2016] [mpm_prefork:notice] [pid 40] AH00163: Apache/2.4.7 (Ubuntu) PHP/5.5.9-1ubuntu4.17 configured -- resuming normal operations
+        [Fri Aug 05 17:07:36.342649 2016] [core:notice] [pid 40] AH00094: Command line: '/usr/sbin/apache2'
+
+
+Si vous allez à la page web du conteneur, vous verrez défiler  le contenu du fichier d'accès.
+
+## <a name="dockeriser_fix_tempo" /> Correctif d'urgence
+
+Bon pour les environnements en utilisation ça va bien , mais que faire s'il y a une modification d'urgence à réalisé , en effet vous devez effectuer une modification d'urgence sur une configuration voir un fichier applicatif. La réponse est **normalement** de refaire une version contenu dans __git__ et de refaire l'image pour la redéployer. 
+
+Si vous suggérer cette solution pour changer l'adresse courriel par exemple il est possible que les personnes en charge soit très frileuse d'effectuer cette opération. Nous allons donc couvrir une possibilité qui ne suit pas les bonnes pratique, mais la réalité opérationnel fait en sorte qu'il est parfois difficile de suivre toujours les bonnes pratique.
+
+Il possible d'effectuer une modification sur un conteneur en exécution sans devoir refaire le __build__, je vais faire un exemple je vais rajouter une option dans le fichier de configuration qui contiendra le type de chiffrement à utiliser. 
+
+        Fichier : $DOC_ROOT/docroot/config.conf
+        database_crypt = TLS
+
+Si je regarde le conteneur en exécution si je fais l'ajout simplement et que je stop et redémarre le conteneur je vais perdre la modification .
+
+        $ docker  ps
+        CONTAINER ID   IMAGE            COMMAND                CREATED         STATUS         PORTS   NAMES
+        2ced572f0476   apache-train:3.1 "/usr/local/sbin/sta   12 minutes ago  Up 12 minutes  80/tcp  jolly_blackwell5
+        $ docker exec -it jolly_blackwell5 bash
+        root@2ced572f0476:/# echo "database_crypt = TLS" >> /var/www/html/docroot/config.conf
+        root@2ced572f0476:/# cat /var/www/html/docroot/config.conf
+        database_host = db.x3rus.com
+        database_user = toto
+        database_pass = password
+        database_db   = mydb
+        database_crypt = TLS
+
+Je stop et redémarre 
+
+        $ docker stop jolly_blackwell5
+        $ docker run  --env SERVER_ADMIN=toto@x3rus.com --env VALIDE_USER="user admin" --env DB_HOST=db.x3rus.com --env DB_USER=toto --env DB_PASS=password --env DB_DB=mydb  apache-train:3.1
+        
+
+        $ docker ps
+        CONTAINER ID  IMAGE            COMMAND                CREATED         STATUS         PORTS   NAMES
+        62f90667a188  apache-train:3.1 "/usr/local/sbin/sta   16 seconds ago  Up 15 seconds  80/tcp  silly_hodgkin
+        $ docker exec -it silly_hodgkin bash
+        root@62f90667a188:/# cat /var/www/html/docroot/config.conf 
+        database_host = db.x3rus.com
+        database_user = toto
+        database_pass = password
+        database_db   = mydb
+
+Maintenant le "__Fix__" , je refais la modification mais en plus je **COMMIT** le changement.
+
+        root@62f90667a188:/# echo "database_crypt = TLS" >> /var/www/html/docroot/config.conf
+        root@62f90667a188:/# exit
+        exit
+
+        $ docker  commit -m " Ajout option database_crypt = TLS " silly_hodgkin apache-train:3.1
+        b118bcb68f95723e4e004ea6ba6a36ac8f4078eaf2bcd35a591e1e6f1a1851ba
+
+Avec l'instruction __docker commit__ je brule la nouvelle configuration dans le conteneur, l'option **-m** me permet de définir un message afin de connaître la modification réalisé . Validons le résultat en arrêtant le conteneur et on le redémarre.
+
+         $ docker  stop silly_hodgkin
+         silly_hodgkin
+         $ docker run  --env SERVER_ADMIN=toto@x3rus.com --env VALIDE_USER="user admin" --env DB_HOST=db.x3rus.com --env DB_USER=toto --env DB_PASS=password --env DB_DB=mydb  apache-train:3.1
+
+         $ docker  ps
+         CONTAINER ID  IMAGE            COMMAND                CREATED         STATUS         PORTS   NAMES
+         713d27ebc826  apache-train:3.1 "/usr/local/sbin/sta   12 seconds ago  Up 10 seconds  80/tcp  lonely_wozniak
+         $ docker  exec -it lonely_wozniak bash
+         root@713d27ebc826:/# cat /var/www/html/docroot/config.conf                             
+         database_host = db.x3rus.com
+         database_user = toto
+         database_pass = password
+         database_db   = mydb
+         database_crypt = TLS
+
+**YEAHH** ça fonctionne réellement ;-), avec la commande __docker history__ vous pouvez revoir le changement qui fut réalisé.
+
+        $ docker  history apache-train:3.1
+        IMAGE          CREATED         CREATED BY                     SIZE        COMMENT
+        b118bcb68f95   3 minutes ago   /usr/local/sbin/start.sh       1.48 kB     Ajout option database_crypt = TLS 
+        5127cb299161   21 minutes ago  /bin/sh -c #(nop) CMD ["/usr/local/sbin/start   0 B                 
+        12d36e660e8f   21 minutes ago  /bin/sh -c #(nop) EXPOSE 80/tcp                 0 B                 
+        1c669168c35f   21 minutes ago  /bin/sh -c chmod a+x /usr/local/sbin/*.sh       679 B
+        [ ... OUTPUT COUPÉ ... ]
+
+J'aurais du mettre l'option **-a** pour spécifier l'auteur ... Lors du **docker commit** mais vous voyez le résultat.
+
+**ATTENTION** : vous devez modifier le dépôt **GIT** pour conservé la nouvelle configuration pour lors du prochain __build__ de l'image !!!
+
+## <a name="dockeriser_dockercompose" /> Docker-Compose pour simplifier
+
+### <a name="dockeriser_dockercompose_introduction" /> Introduction
+Nous allons maintenant introduire docker-compose. Avant toute chose, je vais
+expliquer pourquoi l'outil docker-compose est né et pourquoi il est nécessaire
+et ensuite j'irai en détail sur l'outil lui même.
+
+Tout d'abord, il est important de noter que depuis le début du tutoriel, nous
+utilisons la ligne de commande pour interagir avec docker. Nous l'utilisons pour
+*build* les images, pour les *run*, pour les arrêter, etc.
+
+Cette méthode de travail est correcte, elle fait la job lorsque nous sommes en
+plein developpement. Par contre, qu'arrive-t-il lorsque cela fait plusieurs
+jours, ou pire, plusieurs semaines que vous n'avez plus travaillé sur un travail
+nécessitant docker ?
+
+Il est relativement simple de se rappeler des commandes docker. La où la
+difficulté arrive est lorsqu'il faut se rappeler quelles arguments devaient être
+passé pour construire l'image, ou encore quelles variables d'environnements
+étaient utilisées lors du *run*.
+
+Prenons par example la dernière commande utilisée pour run notre image.
+
+        $ docker run  --env SERVER_ADMIN=toto@x3rus.com --env VALIDE_USER="user admin" --env DB_HOST=db.x3rus.com --env DB_USER=toto --env DB_PASS=password --env DB_DB=mydb  apache-train:3.1
+
+Bonne chance pour vous rappeler de tous les variables d'environnements et autres
+arguments commme le port-forward, etc.
+
+Biensur, il serait très simple de créer un fichier contenant les commandes avec
+leurs arguments.
+
+        $ echo "docker build -t apache-train:3.1 ." > build.sh
+        $ chmod +x build.sh
+        
+        $ echo "docker run  --env SERVER_ADMIN=toto@x3rus.com --env VALIDE_USER="user admin" --env DB_HOST=db.x3rus.com --env DB_USER=toto --env DB_PASS=password --env DB_DB=mydb  apache-train:3.1" > start.sh
+        $ chmod +x start.sh
+
+Voila. Par contre, la commande peut devenir extrèmement longue et laide de cette
+manière. Aucune structure n'est imposé.
+
+Et c'est encore pire lorsqu'on décide d'utiliser plusieurs conteneurs lié entre
+eux. Plus il y a de conteneurs lié, plus le script devient gros, lourd et sans
+structure.
+
+Docker-compose est un outil pour régler ce problème. Il permet d'avoir une
+structure pour garder une traçabilité sur ce que un ou plusieurs conteneurs
+nécessite pour bien fonctionner (ports, volumes, variables d'environnement,
+etc). Docker-compose est deux choses:
+
+* Un *command line utility*
+* Un format pour définir l'utilisation de conteneur.
+
+
+### <a name="dockeriser_dockercompose_format" /> dockercompose.yml
+
+Le format utilisé par docker-compose est le format [yaml](http://yaml.org/). Le
+format yaml est un format principalement utilisé pour des fichiers de
+configuration. La structure est semblable a celle d'un fichier JSON, mais avec
+une syntax beaucoup plus lisible pour l'être humain.
+
+Voici un example d'un fichier yaml avec au dessous, sa version JSON.
+
+        database:
+          host: database.example.com
+          port: 3142
+          admin:
+            username: toto
+            password: password
+          moutons:
+            - mouton1:
+                name: Thomas
+            - mouton2:
+                name: Bèèèèè
+
+Json 
+
+        {
+          "database": {
+            "host": "database.example.com",
+            "port": "3142",
+            "admin": {
+              "username": "admin",
+              "password": "hello_from_the_other_side"
+            },
+            "moutons": [
+              {
+                "mouton1": {
+                  "name": "Thomas"
+                }
+              },
+              {
+                "mouton2": {
+                  "name": "Bèèèèè"
+                }
+              }
+            ]
+          }
+        }
+
+Vous pouvez aller voir les possibilités que nous offrent le fichier
+docker-compose.yml [ici](https://docs.docker.com/compose/compose-file/).
+
+Nous allons prendre notre dernière commande de pour run notre conteneur utilisé
+et la mettre en format pour docker-compose. Nous allons utilisé la version 2 de
+docker-compose, soit la nouvelle.
+
+        version: '2'
+        services:
+          apache_custom:
+            image: apache-train:3.1
+            environment:
+              SERVER_ADMIN: "toto@x3rus.com"
+              VALIDE_USER: "user admin"
+              DB_HOST: "db.x3rus.com"
+              DB_USER: "toto"
+              DB_PASS: "password"
+              DB_DB: "mydb"
+
+
+*Note* : Nous pourrions définir des volumes, comme nous avons utilisé
+précédemment. docker-compose supporte toute ou presque les arguments que docker
+supporte.
+
+Pour information, ce fichier définis la version a utiliser. Ici nous utilisons la
+version 2 comme indiqué plus haut. Ensuite, il y a le label *services*. C'est le
+term que docker-compose utilise pour désigner un image ou conteneur. Sous
+services, nous donnons un nom à ce service. Ce nom peut être n'importe quoi, sa
+valeur n'est pas important **pour l'instant**. Finalement, le nom de l'image et
+des variables d'environnement.
+
+Sauvegarder ce fichier en le nommant *docker-compose.yml* et voila, vous voila
+avec votre premier docker-compose file.
+
+Alors, c'est tout ? Comment on l'utilise ?
+
+Premièrement, il faut installer docker-compose. Docker-compose n'est pas inclu
+avec le docker-engine. Il y a plusieurs méthodes pour l'installer que vous
+pouvez trouver [ici](https://docs.docker.com/compose/install/).
+
+Ensuite, il suffit de run cette commande:
+
+        $ docker-compose up
+
+Et voila, votre conteneur est up and running, prêt a être utilisé. Et la
+prochaine fois que vous allez travailler sur le projet, qui sait, quelques mois
+plus tard peut-être, vous aurez un format structuré et standard pour re-run
+l'application. Fini les start.sh script non-standard et en bordel, woot!
+
+### <a name="dockeriser_dockercompose_build" /> Build avec docker-compose
+
+Docker-compose nous permet de faire plusieurs choses. Il peut utiliser plusieurs
+commandes que docker lui même utilise. Pour une list des commandes, entré cette
+commande dans le terminal:
+
+        $ docker-compose --help
+
+Un autre chose possible avec docker-compose est le build de l'image. Pour le
+moment,  nous n'avons plus besoin de nous rappeler de la ligne de commande pour
+run un conteneur. Nous n'avons aussi plus besoin d'un script comme *start.sh*.
+
+Il serait bien de faire demême pour le build de l'image ainsi que le *build.sh*
+script que nous aurions besoin de faire pour avoir une tracabilité.
+
+Nous allons donc rajouter une section pour build l'image à l'aide de
+docker-compose.
+
+Voici la commande utilisé avant.
+
+        $ docker build -t apache-train:3.1 .
+
+Voici notre fichier *docker-compose.yml* avec le build ajouté.
+
+        version: '2'
+        services:
+          apache_custom:
+            build:
+              dockerfile: Dockerfile
+              context: .
+            image: apache-train:3.1
+            environment:
+              SERVER_ADMIN: "toto@x3rus.com"
+              VALIDE_USER: "user admin"
+              DB_HOST: "db.x3rus.com"
+              DB_USER: "toto"
+              DB_PASS: "password"
+              DB_DB: "mydb"
+
+
+Cool. L'image lors du build sera nommé selon la valeur de *image*. Essayons
+maintenant de build notre image avec docker-compose et de démarrer le conteneur.
+
+        $ docker-compose build
+        [... OUTPUT COUPÉ ...]
+        
+        $ docker-compose up
+
+Wow. Trop cool. Plus besoin de se casser la tête pour build et run des images
+docker. Tout est la, dans un fichier standard.
+
+## <a name="dockeriser_avantage" /> Dockeriser POURQUOI ?
+
+J'aurais peut-être du commencer par ça .... voici quelque point pourquoi __Dockerisé__ est un plus. :
+
+* 

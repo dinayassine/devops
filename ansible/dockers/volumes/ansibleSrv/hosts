@@ -1,0 +1,21 @@
+# Configuration de l'inventaire
+#
+
+# All servers 
+[SrvTraining]
+appserver1
+appserver2
+webserver
+databaseserver
+ 
+# Aapp servers  for training env
+[AppSrvTraining]
+appserver1 
+appserver2
+
+[WebSrvTraining]
+webserver
+badserver
+
+[DbSrvTraining]
+databaseserver

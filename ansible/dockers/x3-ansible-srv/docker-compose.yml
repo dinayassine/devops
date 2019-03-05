@@ -1,0 +1,13 @@
+version: '2'
+services:
+    ansible:
+        image: x3rus/x3-ansible
+        build: .
+        container_name : 'x3-ansible-p'
+        environment:
+            - TERM=xterm
+#        volumes:
+ 
+# Exemple d'utilisation avec docker-compose et run :
+# docker-compose run --volume=/tmp/ansible-tmp/:/etc/ansible/  ansible   /etc/ansible/playbooks/setup-dck.yml
+#
